@@ -14,7 +14,6 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 if not BOT_TOKEN:
     raise ValueError("Токен бота не задан! Укажите переменную окружения BOT_TOKEN.")
 
-#BOT_TOKEN = "8329635862:AAHL1i8nGI86IBXTy4QOd2T9aHr3Qi718hQ"
 
 TZ = pytz.timezone("Europe/Minsk")
 
