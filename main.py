@@ -9,7 +9,7 @@ import pytz
 from datetime import datetime, time as dt_time
 
 # --- Настройки ---
-BOT_TOKEN = "8329635862:AAHL1i8nGI86IBXTy4QOd2T9aHr3Qi718hQ" # os.getenv("BOT_TOKEN")
+BOT_TOKEN = os.getenv("BOT_TOKEN")
 if not BOT_TOKEN:
     raise RuntimeError("BOT_TOKEN is required")
 
