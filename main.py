@@ -1,14 +1,15 @@
 import threading
 import os
-import socket
+import asyncio
 from http.server import HTTPServer, BaseHTTPRequestHandler
-from telegram.ext import Application, CommandHandler, CallbackQueryHandler
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
 from apscheduler.schedulers.background import BackgroundScheduler
 import pytz
 from datetime import datetime, time as dt_time
 
 # --- Настройки ---
-BOT_TOKEN = os.getenv("BOT_TOKEN")
+BOT_TOKEN = "8329635862:AAHL1i8nGI86IBXTy4QOd2T9aHr3Qi718hQ" # os.getenv("BOT_TOKEN")
 if not BOT_TOKEN:
     raise RuntimeError("BOT_TOKEN is required")
 
@@ -36,7 +37,8 @@ scheduler.start()
 
 active_chats = set()
 
-# --- HTTP-сервер для Render ---
+
+# --- HTTP-сервер ---
 class HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path == "/health":
@@ -51,38 +53,53 @@ class HealthHandler(BaseHTTPRequestHandler):
     def log_message(self, format, *args):
         return
 
+
 def run_http_server(port):
     server = HTTPServer(("0.0.0.0", port), HealthHandler)
-    print(f"HTTP server listening on port {port}")
     server.serve_forever()
 
-# Запускаем HTTP-сервер в фоне
+
+# Запускаем HTTP в фоне
 http_thread = threading.Thread(target=run_http_server, args=(PORT,), daemon=True)
 http_thread.start()
 
-# --- Telegram-бот (ЗАПУСКАЕМ КОРРЕКТНО) ---
-def send_message_safe(bot, chat_id: int, text: str):
-    try:
-        bot.send_message(chat_id=chat_id, text=text)
-    except Exception as e:
-        print(f"Ошибка отправки в {chat_id}: {e}")
 
-def start(update, context):
-    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
-    update.message.reply_text(
+# --- Функция для безопасной отправки из планировщика ---
+def send_scheduled_message(bot, chat_id, text):
+    """Вызывается из фонового потока APScheduler"""
+
+    async def _send():
+        try:
+            await bot.send_message(chat_id=chat_id, text=text)
+        except Exception as e:
+            print(f"Ошибка отправки: {e}")
+
+    # Получаем event loop из основного потока
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        loop.run_until_complete(_send())
+    finally:
+        loop.close()
+
+
+# --- Асинхронные обработчики ---
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    keyboard = [[InlineKeyboardButton("▶️ Начать", callback_data="start_shift")]]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await update.message.reply_text(
         "Нажмите кнопку, чтобы начать рабочий день:",
-        reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("▶️ Начать", callback_data="start_shift")]
-        ])
+        reply_markup=reply_markup
     )
 
-def button_handler(update, context):
+
+async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    query.answer()
+    await query.answer()
     chat_id = query.message.chat_id
 
     if chat_id in active_chats:
-        context.bot.send_message(chat_id=chat_id, text="⚠️ График уже запущен на сегодня!")
+        await context.bot.send_message(chat_id=chat_id, text="⚠️ График уже запущен на сегодня!")
         return
 
     today = datetime.now(TZ).date()
@@ -92,7 +109,7 @@ def button_handler(update, context):
         if run_time <= datetime.now(TZ):
             continue
         scheduler.add_job(
-            send_message_safe,
+            send_scheduled_message,
             'date',
             run_date=run_time,
             args=[context.bot, chat_id, msg],
@@ -100,12 +117,15 @@ def button_handler(update, context):
             replace_existing=True
         )
     active_chats.add(chat_id)
-    context.bot.send_message(chat_id=chat_id, text="✅ График рабочего дня запущен!")
+    await context.bot.send_message(chat_id=chat_id, text="✅ График рабочего дня запущен!")
 
-# Создаём и запускаем бота — НЕ в async-функции!
-app = Application.builder().token(BOT_TOKEN).build()
-app.add_handler(CommandHandler("start", start))
-app.add_handler(CallbackQueryHandler(button_handler))
 
-print("Starting Telegram bot in main thread (blocking)...")
-app.run_polling()  # ← БЛОКИРУЮЩИЙ ВЫЗОВ, НЕ КОРУТИНА!
+# --- Запуск ---
+if __name__ == "__main__":
+    app = Application.builder().token(BOT_TOKEN).build()
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CallbackQueryHandler(button_handler))
+
+    print(f"HTTP server started on port {PORT}")
+    print("Starting Telegram bot...")
+    app.run_polling()  # Это блокирующий вызов, но он корректен
