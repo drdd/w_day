@@ -2,7 +2,7 @@ import threading
 import os
 import socket
 from http.server import HTTPServer, BaseHTTPRequestHandler
-from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler
 from apscheduler.schedulers.background import BackgroundScheduler
 import pytz
 from datetime import datetime, time as dt_time
@@ -36,7 +36,7 @@ scheduler.start()
 
 active_chats = set()
 
-# --- HTTP-сервер для Render (в фоновом потоке) ---
+# --- HTTP-сервер для Render ---
 class HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path == "/health":
@@ -48,42 +48,41 @@ class HealthHandler(BaseHTTPRequestHandler):
             self.send_response(404)
             self.end_headers()
 
-    # Отключаем логирование
     def log_message(self, format, *args):
         return
 
 def run_http_server(port):
-    # Принудительно привязываемся к 0.0.0.0
     server = HTTPServer(("0.0.0.0", port), HealthHandler)
+    print(f"HTTP server listening on port {port}")
     server.serve_forever()
 
-# Запускаем HTTP-сервер в фоновом потоке
+# Запускаем HTTP-сервер в фоне
 http_thread = threading.Thread(target=run_http_server, args=(PORT,), daemon=True)
 http_thread.start()
 
-# --- Telegram-бот (в основном потоке) ---
-async def send_message_safe(bot, chat_id: int, text: str):
+# --- Telegram-бот (ЗАПУСКАЕМ КОРРЕКТНО) ---
+def send_message_safe(bot, chat_id: int, text: str):
     try:
-        await bot.send_message(chat_id=chat_id, text=text)
+        bot.send_message(chat_id=chat_id, text=text)
     except Exception as e:
         print(f"Ошибка отправки в {chat_id}: {e}")
 
-async def start(update, context):
+def start(update, context):
     from telegram import InlineKeyboardButton, InlineKeyboardMarkup
-    await update.message.reply_text(
+    update.message.reply_text(
         "Нажмите кнопку, чтобы начать рабочий день:",
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("▶️ Начать", callback_data="start_shift")]
         ])
     )
 
-async def button_handler(update, context):
+def button_handler(update, context):
     query = update.callback_query
-    await query.answer()
+    query.answer()
     chat_id = query.message.chat_id
 
     if chat_id in active_chats:
-        await context.bot.send_message(chat_id=chat_id, text="⚠️ График уже запущен на сегодня!")
+        context.bot.send_message(chat_id=chat_id, text="⚠️ График уже запущен на сегодня!")
         return
 
     today = datetime.now(TZ).date()
@@ -93,29 +92,20 @@ async def button_handler(update, context):
         if run_time <= datetime.now(TZ):
             continue
         scheduler.add_job(
-            lambda bot=context.bot, cid=chat_id, m=msg: asyncio.run_coroutine_threadsafe(
-                send_message_safe(bot, cid, m),
-                asyncio.get_event_loop()
-            ),
+            send_message_safe,
             'date',
             run_date=run_time,
-            id=f"shift_{cid}_{time_str.replace(':', '')}",
+            args=[context.bot, chat_id, msg],
+            id=f"shift_{chat_id}_{time_str.replace(':', '')}",
             replace_existing=True
         )
     active_chats.add(chat_id)
-    await context.bot.send_message(chat_id=chat_id, text="✅ График рабочего дня запущен!")
+    context.bot.send_message(chat_id=chat_id, text="✅ График рабочего дня запущен!")
 
-async def main():
-    print(f"HTTP health server started on port {PORT}")
-    print("Starting Telegram bot in main thread...")
+# Создаём и запускаем бота — НЕ в async-функции!
+app = Application.builder().token(BOT_TOKEN).build()
+app.add_handler(CommandHandler("start", start))
+app.add_handler(CallbackQueryHandler(button_handler))
 
-    app = Application.builder().token(BOT_TOKEN).build()
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CallbackQueryHandler(button_handler))
-
-    # Бот запускается в основном потоке → сигналы работают
-    await app.run_polling()
-
-if __name__ == "__main__":
-    import asyncio
-    asyncio.run(main())
+print("Starting Telegram bot in main thread (blocking)...")
+app.run_polling()  # ← БЛОКИРУЮЩИЙ ВЫЗОВ, НЕ КОРУТИНА!
